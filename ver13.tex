@@ -1,0 +1,448 @@
+\documentclass[a4paper]{article}
+
+\usepackage{INTERSPEECH2022,amsmath,graphicx,amsfonts,amssymb, bm, url, subfig}
+
+
+
+\title{Self-Supervised Learning for Multi-Channel Neural Transducer}
+\name{Atsushi Kojima}
+\address{Advanced Media, Inc.}
+\email{a-kojima@advanced-media.co.jp}
+
+\begin{document}
+
+\maketitle
+% 
+\begin{abstract}
+\mbox{Self-supervised} learning such as wav2vec 2.0 improves accuracy of \mbox{end-to-end} automatic speech recognition (ASR) significantly. Wav2vec 2.0 framework has been applied for \mbox{single-channel} \mbox{end-to-end} ASR model. In this work, we explorer \mbox{self-supervised} learning method for \mbox{multi-channel} \mbox{end-to-end} ASR model based on wav2vec 2.0 framework. As \mbox{multi-channel} \mbox{end-to-end} ASR model, we focus on \mbox{multi-channel} neural transducer. In the experiment, we compared three different methods for feature quantization to train \mbox{multi-channel} conformer audio encoder using contrastive loss: joint quantization, \mbox{feature-wise} quantization and \mbox{channel-wise} quantization. In \mbox{fine-tuning}, we train the \mbox{multi-channel} \mbox{conformer--transducer}. All experiments were conducted using the \mbox{far-field in-house} dataset and \mbox{CHiME-4} dataset. Results of the experiment showed that \mbox{feature-wise} quantization is the most effective method. We observed 66\% relative reductions in character error rate compared with the model without any \mbox{pre-training} in \mbox{far-field in-house} dataset. 
+
+\end{abstract}
+
+\noindent\textbf{Index Terms}: 
+\mbox{Self-supervised} learning, wav2vec 2.0, Multi-channel end-to-end speech recognition, Neural transducer, Conformer
+
+
+% ==========================================================
+\section{Introduction}
+\label{sec:intro}
+% ==========================================================
+% 自己教師あり学習がマルチe2eでは少ない
+\mbox{Self-supervised} learning improves accuracy of \mbox{end-to-end} automatic speech recognition (ASR) model such as \mbox{attention-based} \mbox{encoder-decoder} \cite{las}, CTC \cite{ctc} and neural transducer \cite{rnnt} significantly. As a \mbox{self-supervised} learning, the most popular framework is wav2vec 2.0 \cite{w2v}. 
+In wav2vec 2.0 pre-training, the model is trained similar to masked language modeling \cite{bert}. In the \mbox{fine-tunning}, the model is trained using ASR loss function. Typical \mbox{self-supervised} learning based on wav2vec 2.0 have been applied mainly for \mbox{single-channel end-to-end} ASR model \cite{w2v, mel2vec, w2v_c}. In this work, we train \mbox{multi-channel} \mbox{end-to-end} ASR model based on wav2vec 2.0 framework.
+
+% マルチチャネルはいいよ
+Multi-channel \mbox{end-to-end} ASR models can improve robustness for \mbox{far-field} ASR in noisy environments, because the models can capture not spectral, but also spatial information of target and interference signals captured from different microphones \cite{beam, chime4}. In many \mbox{end-to-end multi-channel} ASR architectures \cite{multi_las1, multi_las2, multi_las3,multi_las4,multi_tt, bf_g}, \mbox{multi-channel} neural transducer \cite{multi_tt} is promising in terms of efficiency and accuracy. 
+
+\mbox{Multi-channel} neural transducer is based on neural transducer such as \mbox{Transformer--Transducer} \cite{t_t1, t_t2} and \mbox{Conformer--Transducer} \cite{conformer}. \mbox{Multi-channel} neural transducer can learn the contextual relationship across channels using \mbox{channel-wise} and \mbox{cross-channel} \mbox{self-attention} layers without beamforming \cite{mask_bf, mask_bf2, frame}. \mbox{Multi-channel} neural transducer overcomes typical \mbox{multi-channel} \mbox{end-to-end} ASR models, which cascaded with neural beamforming \cite{multi_tt}.
+
+% audio encoder in multi T-T を事前学習
+In this work, we train \mbox{multi-channel} neural transducer based on wav2vec 2.0 \mbox{pre-training}. 
+For training, we explorer three quantization methods. First method is joint quantization. Second method is \mbox{feature-wise} quantization. Third method is \mbox{channel-wise quantization}. 
+We will report the results of experiments using \mbox{far-field in-house} dataset and the public \mbox{CHiME-4} dataset \cite{chime4}. 
+
+% それぞれの手法でどれだけ改善したアック
+In the experiment, we show that \mbox{feature-wise quantization} method is the best among quantization methods. We observed 66\% and 4.2\% relative reductions in character error rate compared with model without any \mbox{pre-training} in \mbox{far-field in-house} dataset and \mbox{CHiME-4} datasets, respectively. 
+
+
+
+% ==========================================================
+\section{Background}
+\label{sec:back}
+% ==========================================================
+% ==========================================================
+\subsection{Multi-channel neural transducer}
+\label{sec:t-t}
+% ==========================================================
+\begin{figure}[htb]
+	\centering
+	\includegraphics[scale=0.33]{multi_rnnt_crop.pdf}	
+	\caption{Architecture of multi-channel neural transducer in the case of two channels.}
+	\label{fig:transducer}
+\end{figure}
+
+% multi のアーキテクユア
+We describe architecture of \mbox{multi-channel} neural transducer. Figure~\ref{fig:transducer} shows overview of \mbox{multi-channel} neural transducer in the case of two channels. Given acoustic feature $\bm{x}$ and previous tokens $\bm{y}_{u-1}$, the \mbox{multi-channel} audio encoder converts acoustic feature $\bm{x}$ to hidden vector $\bm{f}$, and the label encoder predicts a new token $\bm{y}_U$ based on past tokens except for blank token. The joint network outputs vector $J$ using two hidden vectors from audio and label encoders and softmax outputs logits. 
+
+\mbox{Multi-channel} audio encoder consists of \mbox{channel-wise} \mbox{self-attention} layers and \mbox{cross-channel} \mbox{self-attention} layers. In the \mbox{channel-wise self-attention} layers converts inputs from each channels to hidden vectors independently via multi-head attention (MHA) \cite{transformer}. In the \mbox{cross-channel self-attention} layers learn the contextual relationship across channels. We convert hidden vector $h_i$ in $i-$th channel from \mbox{channel-wise self-attention} layer to query $Q_i$, and averaging vector of hidden vectors from \mbox{channel-wise self-attention} layers is converted to ${K_i}$ and value ${V_i}$, respectively. MHA is calculated using $Q_i$, $K_i$ and $V_i$. Finally, hidden vectors from the \mbox{cross-channel} attention layer are fused by a simple average. For input features, \mbox{multi-channel} audio encoder gets not only amplitude feaetures, but also phase features unlike \mbox{single-channel} neural transducer.
+
+
+The \mbox{multi-channel} neural transducer is trained using \mbox{RNN--Transducer} (\mbox{RNN--T}) loss \cite{rnnt}. Given acoustic features $\bm{x}$ and label sequence $\bm{y}$, the neural transducer outputs logits $T \times U$. The \mbox{RNN--T} loss is calculated as the sum of probabilities for all paths using a \mbox{forward--backward} algorithm. The \mbox{RNN--T} loss function is written as
+\begin{equation}
+\label{eq:loss}
+\lambda_{\rm RNN--T}=-\sum_{i}^{} \log{P(\bm{y}|{\rm x})},
+\end{equation}
+\begin{equation}
+\label{eq:prob}
+P(\bm{y}|{\rm x})=\sum_{\bm{J} \in \mathcal{Z}(\bm{y}, T)}^{} P(J|{\rm x}),
+\end{equation}
+where $\mathcal{Z}(\bm{y}, T)$ is the set of all alignments of length $T$ for the token sequence.
+
+
+% ==========================================================
+\subsection{Self-supervised learning based on wav2vec 2.0 framework}
+\label{sec:contrastive_loss}
+% ==========================================================
+We describe \mbox{self-supervised} learning based on wav2vec 2.0 framework. In wav2vec 2.0 \mbox{pre-training}, the audio encoder is trained by minimizing contrastive loss. Given target quantized feature ${\bm q}_t$ and K distractors (nontarget quantized features), the model needs to identify true quantized feature in K+1 quantized features ${\bm{\tilde{q}} \in \bm{Q}_t}$. 
+The contrastive loss is calculated as:
+\begin{equation}
+\lambda=-\log{ \frac{\exp(sim(\bm{f}_t, \bm{q}_t))}{\sum_{\bm{\tilde{q}}\sim \bm{Q}_t}^{}\exp(sim(\bm{f}_t,\bm{\tilde{q}}_t))}},
+\label{eq:cont_loss}
+\end{equation}
+where 
+$f$ is hidden vectors from masked audio encoder. $sim$ is function for calculating cosine similarity between two vectors: $sim(\bm{a},\bm{b})=\bm{a}^T\bm{b}/||a||||b||$.
+
+Audio encoder consists of Transformer \cite{transformer} or Conformer \cite{conformer}. Quantizer consists of quantization layer \cite{w2v} or linear layer \cite{mel2vec}.
+
+
+% ==========================================================
+\section{Self-supervised learning for multi-channel neural transducer}
+\label{proposed}
+% ==========================================================
+
+% ==========================================================
+\subsection{Joint quantization}
+\label{proposed0}
+% ==========================================================
+Figure~\ref{fig:p1} shows joint quantization. In this figure, $X^{\rm amplitude}$ and $X^{\rm phase}$ 
+are amplitude and phase features, respectively. $\bm{f}$ and $\bm{q}$ are hidden vector from masked features and quantized features, respectively. This example shows 2-channels case. In this approach, quantizer converts concatenated vectors $[{X_1}^{\rm amplitude};{X_2}^{\rm amplitude};{X_2}^{\rm amplitude};{X_2}^{\rm phase}]$ to quantized vector $\bm{q}$. Quantizer consists of a single linear layer.
+\begin{figure}[htb]
+	\centering
+	\includegraphics[scale=0.31]{p1_crop.pdf}	
+	\caption{Joint quantization in the case of two channels.}
+	\label{fig:p1}
+\end{figure}
+
+
+% ==========================================================
+\subsection{Split quantization}
+\label{proposed3}
+% ==========================================================
+
+
+
+\begin{figure*}[htb]
+	\begin{minipage}[b]{0.5\linewidth}
+		\centering
+		\includegraphics[scale=0.29]{p2_crop.pdf}
+		\caption*{(a) Feature-wise quantization.}
+%		\label{fig:p2}
+	\end{minipage}
+	\begin{minipage}[b]{0.5\linewidth}
+		\centering
+		\includegraphics[scale=0.29]{p3_crop.pdf}
+		\caption*{(b) Channel-wise quantization.}
+%		\label{fig:p3}
+	\end{minipage}	
+%\label{fig:p2}
+\caption{Split quantization in the case of two channels.}
+\label{fig:p2}
+\end{figure*}
+
+
+% ==========================================================
+\subsubsection{Feature-wise quantization}
+\label{proposed1}
+% ==========================================================
+Figure~\ref{fig:p2} (a) shows \mbox{feature-wise} quantization. This example shows 2 channels case. In this method, quantization modules consists of amplitude quantizer, phase quantizer and joint quantizer. Amplitude quantizer converts amplitude features $[{X_1}^{\rm amplitude};{X_2}^{\rm amplitude}]$ to quantized amplitude features $\bm{q}^{\rm amplitude}$. Phase quantizer converts phase features ${X_1}^{\rm phase};{X_2}^{\rm phase}$ to quantized phase features $\bm{q}^{\rm phase}$. 
+Joint quantizer gets the two vectors $[\bm{q}^{\rm amplitude};\bm{q}^{\rm phase}]$from two quantizers, and converts the vectors to quantized feature $\bm{q}$. All quantizers consist of linear layers. 
+
+% ==========================================================
+\subsubsection{Channel-wise quantization}
+\label{proposed2}
+% ==========================================================
+Figure~\ref{fig:p2} (b) shows \mbox{channel-wise} quantization. In this method, quantization modules consists of channel quantizers, attention and joint quantizer. channel quantizers converts amplitude and phase features ${X_c}^{\rm amplitude};{X_c}^{\rm phase}$ from each input channels to \mbox{channel-wise} quantized features ${\bm{q}_c}$. To capture channel the contextual relationship across channels, attention was calculated.
+For instance, attention for first channel in the case of two channel is calculated as:
+\begin{equation}
+{\bm a}_1 = {\rm Softmax}(\bm{w}^T {\rm Tanh}(U X_1 + H X_2+\bm{b})),
+\label{eq:attention}
+\end{equation}
+where $X_1=[{X_1}^{\rm amplitude};{X_1}^{\rm phase}]$ and $X_2=[ {X_2}^{\rm amplitude}; {X_2}^{\rm phase}]$.
+The attention is used for calculating weighted quantized vector ${\bm{q}_c}^{'}$. Joint quantizer converts weighted quantized features from each channel quantizers to quantized vecor $\bm{q}$.
+
+
+% ==========================================================
+\section{Experiments}
+\label{sec:experiment}
+% ==========================================================
+
+% ==========================================================
+\subsection{Data preparation}
+\label{sec:corpus}
+% ==========================================================
+\begin{description}
+\item[Far-field in-house dataset]
+As the experimental dataset, we use \mbox{far-field in-house} dataset, which consists of 104.3 hours of transcribed speech in Japanese speech. The speech is recorded by a \mbox{2-channel} linear microphone array, with
+\mbox{inter-microphone} spacing of 8 millimeters. Amount of train and test data are 102 and 2.3 hours, respectively. For \mbox{self-supervised} learning and \mbox{fine-tuning}, we used train set. For evaluating the model, we use test set. In this dataset, we report character error rate (CER).
+
+\item[CHiME-4 dataset]
+In addition, we use also \mbox{CHiME-4} datasets for evaluation our proposed method. The speech is recorded by 6 microphones in English speech. For efficient training, we pickup the first and sixth microphone channel as input signals. In this experiment, we use train and eval sets on real data. For \mbox{self-supervised} learning and \mbox{fine-tuning}, we used train set. For evaluating the model, we use eval set. In this dataset, we report word error rate (WER) and CER.
+\end{description}
+
+
+% ==========================================================
+\subsection{Model details}
+\label{sec:archtec}
+% ==========================================================
+We describe architecture of \mbox{multi-channel} neural transducer. we use 8 conformer layers and a unidirectional LSTM layer for \mbox{multi-channel} audio encoder and label encoder, respectively. Table~\ref{tab:conformer} shows the parameters of the Conformer \cite{conformer} encoder model. The parameter size of the \mbox{multi-channel} Conformer encoder is 15.0 (M). The joint network obtains \mbox{512-dimensional} vectors from audio and label encoders, and outputs \mbox{256-dimensional} vector with Tanh activation. Finally, softmax outputs logits.
+
+\begin{table}[htb]
+	\centering	
+	\caption{\mbox{Multi-channel} Conformer encoder architecture.}
+	\begin{tabular}{c|l} \hline
+		Parameter & Value \\ \hline 		
+		Number of layers & 8 \\ \hline 	
+		Number of channels & 2 \\ \hline 															
+		Number of heads & 8 \\ \hline 							
+		Head dimension & 32 \\ \hline 							
+		Kernel size & 7 \\ \hline 									
+		Number of hidden nodes & 256 \\ \hline 							
+		\shortstack{Position-wise feed-forward \\ dimension} & 512 \\ \hline 
+	\end{tabular}
+	\label{tab:conformer}
+\end{table}
+
+
+For amplitude feature, we use \mbox{log-STFT} square magnitude. For phase feature, 
+we use cosine interchannel phase differences (cosIPD) and sinIPD \cite{cos_ipd}.The features are extracted every 10 ms with a window size of 25 ms from audio samples. We set fft size as 512.
+
+In wav2vec 2.0 \mbox{pre-training}, we train \mbox{multi-channel} audio encoder by minimizing contrastive loss. We masked 50 \% of time steps, and set number of distractor as 100. Distractors are uniformly sampled from other masked time steps of the same utterance.
+
+For \mbox{fine-tunning}, we train \mbox{multi-channel} neural transducer by minimizing \mbox{RNN--T} loss. As baseline system, we use \mbox{multi-channel} neural transducer without any \mbox{pre-traiing}. In the \mbox{far-field in-house} dataset, the model outputs 715 characters and blank token. In \mbox{CHiME-4} dataset, the model outputs 26 lower-case alphabet characters, 3 special tokens (apostrophe, period and whitespace) and blank token. In addition, gradient clipping was applied with a value of 5 to avoid an exploding gradient. We apply SpecAugment \cite{specaugment} for improving robustness. For training all models, we use the Transformer learning schedule \cite{transformer}. We also use the Adam optimizer \cite{adam}. We set ${\beta}_1=0.9$, ${\beta}_2=0.98$ and $\epsilon=10$. All networks were implemented using Pytorch \cite{torch}.
+
+
+% ==========================================================
+\subsection{Results}
+\label{sec:results}
+% ==========================================================
+
+% ==========================================================
+\subsubsection{Far-field in-house dataset}
+\label{sec:far}
+% ==========================================================
+\begin{table}[htb]
+	\begin{center}
+		\caption{The result of feature-wise quantization on \mbox{far-field in-house} dataset. Results are given as relative character error rate reduction (CERR) [\%]. The plus sign indicates improvement.}
+		\scalebox{1}{
+			\begin{tabular}{llllll} \hline
+				ID & pre-training & style & \shortstack{amplitude \\ quantizer \\ activation} & \shortstack{phase \\ quantizer \\ activation} & CERR (\%) \\ \hline
+				exp0 & - & - & - & - & 0 \\ \hline		
+				exp1 &\checkmark & split & Swish & Swish & 58.1 \\											
+				exp2 &\checkmark & split & Swish & ReLU & 60.5 \\
+				exp3 &\checkmark & joint & - & - & 62.1 \\			
+				exp4 &\checkmark & split & Swish & None & ${\bf 66}$ \\ \hline			
+		\end{tabular}}
+		\label{tab:result_1}
+	\end{center}	
+\end{table}
+
+% feature- based quantization
+Table~\ref{tab:result_1} shows the result of \mbox{feature-wise} quantization in \mbox{far-field in-house dataset}.
+In this experiment, we investigate the effect activation function for amplitude and phase quantizers. Comparing to the result of model without any \mbox{pre-trainng} (exp0), we can see improvement by any \mbox{pre-training methods} (exp1, exp2, exp3, exp4). In addition, we can see difference of improvement gain depending on activation function (exp1,2,4). We can observe 66\% relative reduction in CER using the quantization method, which uses amplitude quantizer with Swish activation \cite{swish} and phase quantizer without any activation (exp4). The CER of the method was lower than the joint quantization (exp3). 
+
+\begin{table}[htb]
+	\begin{center}
+		\caption{The result of channel-wise quantization on \mbox{far-field in-house} dataset. Results are given as relative character error rate reduction (CERR) [\%]. The plus sign indicates improvement.}
+		\begin{tabular}{l|lll} \hline
+			ID & pre-training & style & CERR (\%) \\ \hline
+			exp0 & - & - & 0 \\ \hline		
+			exp3 & \checkmark & joint & 62.1 \\
+			exp5 & \checkmark & split & 49.1 \\ \hline			
+		\end{tabular}
+		\label{tab:result_2}
+	\end{center}	
+\end{table}
+
+Table~\ref{tab:result_2} shows the result of \mbox{channel-wise} quantization. Comparing to the result of model without any \mbox{pre-trainng} (exp0), the quantization method also reduced CER (exp5). Comparing the \mbox{feature-wise} quantization (exp1, exp2, exp4) and joint quantization (exp3), we observe improvement gain was small.
+
+% ==========================================================
+\subsubsection{CHiME-4 dataset}
+\label{sec:chime4}
+% ==========================================================
+Table~\ref{tab:result_3} shows the result of \mbox{feature-wise} quantization in \mbox{CHiME-4} dataset. 
+Comparing to the result of model without any \mbox{pre-trainng} (expA), all method for \mbox{pre-training} (expB, expC, expD, expE) reduced CER same as \mbox{far-field in-house} dataset. For WER, we can observe 2.4\% relative reduction in WER using the quantization method, which uses amplitude quantizer with Swish activation and phase quantizer with Swish activation (expB). For CER, we can observe 4.2\% relative reduction in CER using the quantization method, which uses amplitude quantizer with Swish activation and phase quantizer without any activation (expE). Comparing the result of experiment using \mbox{far-field in-house} dataset, improvement gain was small. We concluded that the reason for this is that amount of training data in \mbox{CHiME-4} dataset is small comparing amount of training data in \mbox{far-field in-house} dataset.
+
+
+\begin{table}[htb]
+	\begin{center}
+		\caption{The result of feature-wise quantization on \mbox{CHiME-4} dataset. Results are given as relative character error rate reduction (CERR) [\%] and relative word error rate reduction (WERR) [\%]. The plus sign indicates improvement.}
+		\scalebox{0.8}{
+			\begin{tabular}{lllllll} \hline
+				ID & pre-training & style & \shortstack{amplitude \\ quantizer \\ activation} & \shortstack{phase \\ quantizer \\ activation} & CERR (\%) & WERR (\%) \\ \hline
+				expA & - & - & - & - & 0 & 0 \\ \hline		
+				expB &\checkmark & split & Swish & Swish & 3.6 & {\bf 2.4} \\ 	
+				expC &\checkmark & split & Swish & ReLU & 2.6 & 1.7 \\
+				expD &\checkmark & joint & - & - & 3.2 & 1.4 \\			
+				expE &\checkmark & split & Swish & None & {\bf 4.2} & 0.1 \\ \hline			
+		\end{tabular}
+	}
+		\label{tab:result_3}
+	\end{center}	
+\end{table}
+
+
+% ==========================================================
+\subsection{Analysis of hidden vectors}
+\label{sec:analyze_hidden}
+% ==========================================================
+\begin{figure}[htb]
+	\centering
+	\includegraphics[scale=0.16]{plot_hidden_crop.pdf}	
+	\caption{Analysis of hidden vectors after self-supervised learning.}
+	\label{fig:ssl}
+\end{figure}
+We analyze hidden vectors from \mbox{multi-channel} audio encoder after \mbox{pre-training}. Figure~\ref{fig:ssl} compares hidden vectors from \mbox{multi-channel} \mbox{multi-channel} audio encoders trained by different quantization methods using on \mbox{far-field in-house dataset}. Upper figure shows \mbox{log-STFT} square magnitude. Middle figure shows hidden vector from \mbox{multi-channel} audio encoder trained by joint quantization (exp3). Middle figure shows hidden vector from \mbox{multi-channel} audio encoder trained by \mbox{feature-wise} quantization (exp4). Comparing hidden vectors, we can observe more clear contrast between speech and noise section on \mbox{feature-wise} quantization. This \mbox{multi-channel} audio encoder trained by \mbox{feature-wise} quantization learns latent representation better than \mbox{multi-channel} audio encoder trained by joint quantization in terms noise robustness.
+
+
+% ==========================================================
+\section{Conclusion}
+\label{sec:conclution}
+% ==========================================================
+In this work, we train \mbox{multi-channel} neural transducer based on wav2vec 2.0 \mbox{pre-training}. 
+For training, we explorer three quantization methods. First method is joint quantization. Second method is \mbox{feature-wise} quantization. Third method is \mbox{channel-wise quantization}. 
+We will report the results of experiments using \mbox{far-field in-house} dataset and the public dataset \cite{chime4}. In the experiment, we show that \mbox{feature-wise quantization} method is the best among quantization methods. We observed 66\% and 4.2\% relative reductions in character error rate compared with model without any \mbox{pre-training} in \mbox{far-field in-house} dataset and \mbox{CHiME-4} datasets, respectively. 
+
+
+\begin{thebibliography}{99} 
+	
+	\bibitem{las}
+	W. Chan, N. Jaitly, Q. Le, and O. Vinyals,
+	``Listen, attend and spell: A neural network for large vocabulary conversational speech recognition,''
+	in \textit{Proc. ICASSP}, 2016.		
+
+	\bibitem{ctc}
+	A. Graves, S. Fern\'andez, F. Gomez, and J. Schmidhuber,
+	``Connectionist temporal classification: Labelling unsegmented sequence data with recurrent neural networks,''
+	in \textit{Proc. ICML}, 2006.
+
+	\bibitem{rnnt}
+	A. Graves,
+	``Sequence transduction with recurrent neural networks,''
+	\textit{arXiv preprint arXiv:1211.3711}, 2012.
+	
+	
+	\bibitem{w2v}
+	A. Baevski, H. Zhou, A. Mohamed, and M. Auli,
+	``wav2vec 2.0: A framework for self-supervised learning of speech representations,'' 
+	\textit{arXiv preprint arXiv:2006.11477}, 2020.
+	
+	\bibitem{bert}
+	J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova,
+	``Bert: Pre-training of deep bidirectional transformers for language understanding,''
+	arXiv, abs/1810.04805, 2018.	
+	
+	\bibitem{mel2vec}
+	Y. Zhang, J. Qin, D. S. Park, W. Han, C.-C. Chiu, R. Pang, Q. V. Le, and Y. Wu,
+	``Pushing the limits of semi-supervised learning for automatic speech recognition,''
+	\textit{arXiv preprint arXiv:2010.10504}, 2020.	
+
+	\bibitem{w2v_c}
+	S. Sadhu, D. He, C.-W. Huang, S. H. Mallidi, M. Wu, A. Rastrow, A. Stolcke, J. Droppo, R. Maas,
+	``Wav2vec-C: A self-supervised model for speech representation learning,''
+	 in \textit{Proc. INTERSPEECH}, 2021.		
+
+	\bibitem{beam}
+	R. Haeb-Umbach, J. Heymann, L. Drude, S. Watanabe, M. Delcroix, and T. Nakatani,
+	``Far-field automatic speech recognition,''
+	Proceedings of the IEEE, 2020.	
+	
+	\bibitem{chime4}E. Vincent, S. Watanabe, A. A. Nugraha, J. Barker, and R. Marxer,
+	``An analysis of environment, microphone and data simulation mismatches in robust speech recognition,'' Computer Speech \& Language, vol. 46, pp. 535-557, 2017.
+
+
+	\bibitem{multi_las1}	
+	T. Ochiai, S. Watanabe, T. Hori, and J. R. Hershey,
+	 ``Multichannel end-to-end speech recognition,'' \textit{arXiv preprint arXiv:1703.04783}, 2017.
+	 
+	 
+	\bibitem{multi_las2}	
+	X. Chang, W. Zhang, Y. Qian, J. Le Roux, S. Watanabe,
+	``MIMO-SPEECH: End-to-end multi-channel multi-speaker speech recognition,'' in \textit{Proc. ASRU}, 2019.
+	
+	\bibitem{multi_las3}
+	A. S. Subramanian, X. Wang, S. Watanabe, T. Taniguchi, D. Tran, Y. Fujita,
+	``An Investigation of end-to-end multichannel speech recognition for reverberant and mismatch conditions,'' \textit{arXiv preprint arXiv:1904.09049}, 2019.		
+	
+	\bibitem{multi_las4}		
+	F. Chang, M. Radfar, A. Mouchtaris, B. King, and S. Kunzmann,
+	 ``End-to-end multi-channel Transformer for speech recognition,''	
+	in \textit{Proc. ICASSP}, 2021.	 
+	
+	\bibitem{multi_tt}
+	F. Chang, M. Radfar, A. Mouchtaris, and M. Omologo,
+	``Multi-channel Transformer Transducer for speech recognition,'' in \textit{Proc. INTERSPEECH}, 2021.
+	
+	\bibitem{bf_g}
+	B. Li, T. N. Sainath, R. J. Weiss, K. W. Wilson, and M. Bacchiani,
+	``Neural network adaptive beamforming for robust multichannel speech recognition,'' in \textit{Proc. INTERSPEECH}, 2016.			
+	
+
+	\bibitem{t_t1}C. F. Yeh, J. Mahadeokar, K. Kalgaonkar, Y. Wang, D. Le, M. Jain, K. Schubert, C. Fuegen and M. L. Seltzer,
+``Transformer--Transducer: End-to-end speech recognition with self-attention,''
+in \textit{Proc. INTERSPEECH}, 2020.
+
+\bibitem{t_t2}Q. Zhang, H. Lu, H. Sak, A. Tripathi, E. McDermott, S. Koo, S. Kumar,
+``Transformer Transducer: A streamable speech recognition model with Transformer encoders and RNN--T loss,''
+in \textit{Proc. INTERSPEECH}, 2020.
+
+	\bibitem{conformer}
+A. Gulati, J. Qin, C.-C. Chiu, N. Parmar, Y. Zhang, J. Yu, W. Han, S. Wang, Z. Zhang, Y. Wu, R. Pang,
+``Conformer: Convolution-augmented transformer for speech recognition,''in \textit{Proc. INTERSPEECH}, 2020.
+	
+	\bibitem{mask_bf}
+	J. Heymann, L. Drude, and R. Haeb-Umbach,
+	``Neural network based spectral mask estimation for acoustic beamforming,'' in \textit{Proc. ICASSP}, 2016.
+	
+	\bibitem{mask_bf2}
+	H. Erdogan, J. Hershey, S. Watanabe, M. Mandel, and, J. Le Roux,
+	``Improved MVDR beamforming using single-channel mask prediction networks,'' in \textit{Proc. INTERSPEECH}, 2016.
+	
+	\bibitem{frame}
+	T. Higuchi, K. Kinoshita, N. Ito, S. Karita and T. Nakatani,
+	``Frame-by-frame closed-form update for mask-based adaptive MVDR beamforming,'' in \textit{Proc. ICASSP}, 2018.
+	
+
+	
+
+	\bibitem{transformer} A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N.
+	Gomez, L. Kaiser, and I. Polosukhin,
+	``Attention is all you need,''
+	in Advances in neural
+	information processing systems, 2017.
+	
+	
+	\bibitem{cos_ipd}
+	Z. Wang, J. Le Roux and J. R. Hershey,
+	 ``Multi-channel deep clustering: Discriminative spectral and spatial embeddings for speaker-independent speech separation,'' in \textit{Proc. ICASSP}, 2018.
+	 	 
+	
+
+	
+	
+
+	\bibitem{specaugment}
+	D. S. Park, W. Chan, Y. Zhang, C. Chiu, B. Zoph, E. D. Cubuk, and Q. V. Le,
+	``SpecAugment: A simple data augmentation method for automatic speech recognition,''
+	in \textit{Proc. INTERSPEECH}, 2019.	
+	
+	\bibitem{adam}
+	D. P. Kingma and J. Ba,
+	``Adam: A method for stochastic optimization,''
+	in \textit{Proc. ICLR}, 2015.
+	
+	\bibitem{torch}
+	A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen, Z. Lin, N. Gimelshein,
+	L. Antiga, A. Desmaison, A. K\"opf, E. Yang, Z. DeVito, M. Raison, A. Tejani, S. Chilamkurthy, B. Steiner, L. Fang, J. Bai, and S. Chintala,
+	``PyTorch: An imperative style, high-performance deep learning library,''
+	in \textit{Proc. NeurIPS}, 2019.
+	
+	\bibitem{swish}
+P. Ramachandran, B. Zoph, and Q. V Le,
+``Searching for activation functions,''
+\textit{arXiv preprint arXiv:1710.05941}, 2017.		 		
+	
+	
+	
+
+\end{thebibliography}
+
+\end{document}
